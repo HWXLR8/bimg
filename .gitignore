@@ -1,0 +1,11 @@
+bimg
+*.o
+xdg-shell-protocol.h
+xdg-shell-protocol.c
+*.bmp
+*.png
+*.jpg
+*.jpeg
+
+# AI
+.qwen
