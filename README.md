@@ -8,17 +8,18 @@ Minimal Wayland image viewer
 make
 ```
 
-Requirements:
+Dependencies:
 
-- wayland-client
-- egl
-- glesv2
-- wayland-egl
-- libjpeg
-- libturbojpeg
-- libpng
-- libwebp
-- wayland-protocols
+- `wayland-client`
+- `egl`
+- `glesv2`
+- `wayland-egl`
+- `libjpeg`
+- `libturbojpeg`
+- `libpng`
+- `libwebp`
+- `libtiff`
+- `wayland-protocols`
 
 ## Usage
 

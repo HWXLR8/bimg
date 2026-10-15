@@ -2,7 +2,7 @@ PROG    := bimg
 CC      ?= cc
 SCANNER ?= wayland-scanner
 XDG_XML ?= /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
-PC      := wayland-client egl glesv2 wayland-egl libjpeg libturbojpeg libpng libwebp libwebpdemux libwebpmux
+PC      := wayland-client egl glesv2 wayland-egl libjpeg libturbojpeg libpng libwebp libwebpdemux libwebpmux libtiff-4
 
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Werror

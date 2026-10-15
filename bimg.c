@@ -195,7 +195,8 @@ static bool is_img_name(const char *name)
 	if (!dot)
 		return false;
 	dot++;
-	static const char *exts[] = {"png", "jpg", "jpeg", "gif", "webp"};
+	static const char *exts[] = {"png", "jpg", "jpeg", "gif", "webp", "tif",
+	                              "tiff"};
 	for (size_t i = 0; i < sizeof exts / sizeof *exts; i++)
 		if (strcasecmp(dot, exts[i]) == 0)
 			return true;

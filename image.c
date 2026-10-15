@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <tiffio.h>
 #include <turbojpeg.h>
 #include <webp/decode.h>
 #include <webp/demux.h>
@@ -110,6 +111,10 @@ struct webp_codec {
 };
 
 struct gif_codec {
+    struct file_data file;
+};
+
+struct tiff_codec {
     struct file_data file;
 };
 
@@ -1531,6 +1536,111 @@ fail:
     return -1;
 }
 
+static int load_tiff(struct image *image, const char *path,
+                     struct file_data file, char *error, size_t error_size)
+{
+    struct tiff_codec *codec = calloc(1, sizeof(*codec));
+    if (!codec) {
+        set_error(error, error_size, "out of memory");
+        return -1;
+    }
+    codec->file = file;
+
+    TIFF *tiff = TIFFOpen(path, "r");
+    if (!tiff) {
+        set_error(error, error_size, "cannot open TIFF");
+        free(file.data);
+        free(codec);
+        return -1;
+    }
+
+    tdir_t directories = TIFFNumberOfDirectories(tiff);
+    if (!directories) {
+        set_error(error, error_size, "TIFF has no directories");
+        goto fail;
+    }
+
+    image->frames = calloc(directories, sizeof(*image->frames));
+    if (!image->frames) {
+        set_error(error, error_size, "out of memory");
+        goto fail;
+    }
+
+    for (tdir_t i = 0; i < directories; i++) {
+        if (!TIFFSetDirectory(tiff, i)) {
+            set_error(error, error_size, "cannot read TIFF directory");
+            goto fail;
+        }
+
+        uint32_t width, height;
+        if (!TIFFGetField(tiff, TIFFTAG_IMAGEWIDTH, &width) ||
+            !TIFFGetField(tiff, TIFFTAG_IMAGELENGTH, &height) ||
+            width > INT_MAX || height > INT_MAX) {
+            set_error(error, error_size, "invalid TIFF dimensions");
+            goto fail;
+        }
+
+        if ((size_t)width > SIZE_MAX / (size_t)height) {
+            set_error(error, error_size, "TIFF is too large");
+            goto fail;
+        }
+
+        size_t pixel_count = (size_t)width * height;
+        if (pixel_count > SIZE_MAX / sizeof(uint32_t)) {
+            set_error(error, error_size, "TIFF is too large");
+            goto fail;
+        }
+
+        if (i == 0) {
+            image->width = (int)width;
+            image->height = (int)height;
+        }
+
+        uint32_t *rgba = malloc(pixel_count * sizeof(uint32_t));
+        if (!rgba) {
+            set_error(error, error_size, "out of memory");
+            goto fail;
+        }
+
+        if (TIFFReadRGBAImage(tiff, width, height, (uint32_t *)rgba, 0) != 1) {
+            set_error(error, error_size, "cannot read TIFF pixels");
+            free(rgba);
+            goto fail;
+        }
+
+        image->frames[i].pixels = rgba;
+        image->frames[i].opaque = true;
+        for (size_t p = 0; p < pixel_count; p++) {
+            uint32_t px = rgba[p];
+            uint32_t a = (px >> 24) & 0xff;
+            uint32_t r = px & 0xff;
+            uint32_t g = (px >> 8) & 0xff;
+            uint32_t b = (px >> 16) & 0xff;
+            image->frames[i].pixels[p] = a << 24 | r << 16 | g << 8 | b;
+            if (a != 0xff)
+                image->frames[i].opaque = false;
+        }
+        image->frames[i].duration_ms = 100;
+        image->frames[i].lossless = false;
+        image->frames[i].quality = 90.0f;
+    }
+
+    image->frame_count = directories;
+    image->format = IMAGE_TIFF;
+    image->codec = codec;
+    TIFFClose(tiff);
+    return 0;
+
+fail:
+    for (tdir_t i = 0; i < directories; i++)
+        free(image->frames[i].pixels);
+    free(image->frames);
+    image->frames = NULL;
+    TIFFClose(tiff);
+    free(codec);
+    return -1;
+}
+
 int image_load(struct image *image, const char *path, char *error, size_t error_size)
 {
     struct file_data file = {0};
@@ -1550,9 +1660,14 @@ int image_load(struct image *image, const char *path, char *error, size_t error_
     } else if (file.size >= 6 && (memcmp(file.data, "GIF87a", 6) == 0 ||
                                    memcmp(file.data, "GIF89a", 6) == 0)) {
         result = load_gif(image, file, error, error_size);
+    } else if (file.size >= 4 && ((memcmp(file.data, "II", 2) == 0 &&
+                                   memcmp(file.data + 2, "*\0", 2) == 0) ||
+                                  (memcmp(file.data, "MM", 2) == 0 &&
+                                   memcmp(file.data + 2, "\0*", 2) == 0))) {
+        result = load_tiff(image, path, file, error, error_size);
     } else {
         set_error(error, error_size,
-                  "unsupported format (expected JPEG, PNG, WebP, or GIF)");
+                  "unsupported format (expected JPEG, PNG, WebP, GIF, or TIFF)");
         result = -1;
     }
     if (result < 0)
@@ -1929,6 +2044,44 @@ static uint8_t *crop_rgba(const struct image *image, size_t frame,
         }
     }
     return rgba;
+}
+
+static int save_tiff(const struct image *image, const char *path, int x, int y,
+                     int width, int height, char *error, size_t error_size)
+{
+    TIFF *tiff = TIFFOpen(path, "w");
+    if (!tiff) {
+        set_errno_error(error, error_size, "cannot create TIFF");
+        return -1;
+    }
+    uint8_t *rgba = crop_rgba(image, 0, x, y, width, height);
+    int result = -1;
+    if (!rgba) {
+        set_error(error, error_size, "out of memory");
+        goto out;
+    }
+    TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, (uint32_t)width);
+    TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, (uint32_t)height);
+    TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+    TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
+    TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, 8);
+    TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, 4);
+    TIFFSetField(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+    uint16_t n_samples = 1;
+    uint16_t extra_samples[1] = { EXTRASAMPLE_UNASSALPHA };
+    TIFFSetField(tiff, TIFFTAG_EXTRASAMPLES, n_samples, extra_samples);
+    for (int row = 0; row < height; row++) {
+        uint32_t row_no = (uint32_t)row;
+        if (TIFFWriteScanline(tiff, rgba + (size_t)row * width * 4, row_no, 0) < 0) {
+            set_error(error, error_size, "cannot write TIFF");
+            goto out;
+        }
+    }
+    result = 0;
+out:
+    free(rgba);
+    TIFFClose(tiff);
+    return result;
 }
 
 static int apply_webp_chunks(WebPMux *mux, const struct webp_codec *codec,
@@ -2393,6 +2546,8 @@ int image_save_crop(const struct image *image, const char *path,
         return image->frame_count == 1 ?
                    save_gif(image, path, x, y, width, height, error, error_size) :
                    save_gif_webp(image, path, x, y, width, height, error, error_size);
+    if (image->format == IMAGE_TIFF)
+        return save_tiff(image, path, x, y, width, height, error, error_size);
     return save_webp(image, path, x, y, width, height, error, error_size);
 }
 
@@ -2437,6 +2592,12 @@ void image_free(struct image *image)
             free(codec->file.data);
             free(codec);
         }
+    } else if (image->format == IMAGE_TIFF) {
+        struct tiff_codec *codec = image->codec;
+        if (codec) {
+            free(codec->file.data);
+            free(codec);
+        }
     }
     memset(image, 0, sizeof(*image));
 }
@@ -2477,6 +2638,8 @@ const char *image_format_name(enum image_format format)
         return "PNG";
     if (format == IMAGE_GIF)
         return "GIF";
+    if (format == IMAGE_TIFF)
+        return "TIFF";
     return "WebP";
 }
 
@@ -2494,6 +2657,8 @@ bool image_extension_matches(enum image_format format, const char *path)
         return strcasecmp(dot, "png") == 0;
     if (format == IMAGE_GIF)
         return strcasecmp(dot, "gif") == 0;
+    if (format == IMAGE_TIFF)
+        return strcasecmp(dot, "tif") == 0 || strcasecmp(dot, "tiff") == 0;
     return strcasecmp(dot, "webp") == 0;
 }
 

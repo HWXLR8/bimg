@@ -10,6 +10,7 @@ enum image_format {
     IMAGE_PNG,
     IMAGE_WEBP,
     IMAGE_GIF,
+    IMAGE_TIFF,
 };
 
 struct image_frame {
