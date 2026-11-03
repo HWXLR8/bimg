@@ -282,7 +282,7 @@ static const char fs_src[] =
     "  vec4 c = u_tint.a < 0.5 ? texture2D(u_tex, v_uv)\n"
     "           : u_tint.a < 1.5 ? vec4(texture2D(u_wtex, v_uv).rgb, 1.0)\n"
     "           : texture2D(u_ftex, v_uv);\n"
-    "  gl_FragColor = c * u_tint;\n"
+    "  gl_FragColor = u_tint.a < 0.5 ? vec4(c.rgb, 1.0) : c * u_tint;\n"
     "}\n";
 
 static GLuint compile_shader(GLenum type, const char *src)
